@@ -1,0 +1,73 @@
+# ---------- Дополнения для голосования и рейтинга ----------
+user_seen = {}  # user_id -> [ид_идей, которые видел]
+user_voted_for = {}  # user_id -> id идеи, за которую проголосовал
+idea_votes = {}  # idea_num -> кол-во голосов
+
+# ---------- Получить 10 новых идей для оценки ----------
+def get_new_ideas_for_vote(user_id):
+    wb = get_book()
+    ws = wb.active
+    seen = user_seen.get(user_id, [])
+    # Берем только идеи, которые не принадлежат пользователю
+    new_ideas = [row for row in ws.iter_rows(min_row=2, values_only=True)
+                 if row[0] not in seen and row[2] != str(user_id)]
+    return random.sample(new_ideas, min(len(new_ideas), 10))
+
+# ---------- Начать оценку ----------
+@bot.message_handler(func=lambda m: m.text == "📝 Оценить идеи")
+def evaluate_ideas(msg):
+    new_ideas = get_new_ideas_for_vote(msg.from_user.id)
+    if not new_ideas:
+        bot.send_message(msg.chat.id, "✅ Ты уже оценил все доступные идеи, можешь добавить свою!")
+        return
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for idea in new_ideas:
+        markup.add(f"{idea[0]}. {idea[3]}")
+
+    user_voted_for[msg.from_user.id] = None
+    bot.send_message(msg.chat.id, "Выбери ЛУЧШУЮ идею из списка (только 1):", reply_markup=markup)
+
+# ---------- Голос за идею ----------
+@bot.message_handler(func=lambda m: m.text.split(".")[0].isdigit() and m.from_user.id in user_voted_for and user_voted_for[m.from_user.id] is None)
+def vote_for_idea(msg):
+    idea_num = int(msg.text.split(".")[0])
+    user_voted_for[msg.from_user.id] = idea_num
+
+    # Добавляем голос
+    idea_votes[idea_num] = idea_votes.get(idea_num, 0) + 1
+
+    # Сохраняем, что пользователь видел эту идею
+    user_seen.setdefault(msg.from_user.id, []).append(idea_num)
+
+    bot.send_message(msg.chat.id, f"✅ Ты проголосовал за идею №{idea_num}. Теперь можешь добавить свою!", reply_markup=main_kb())
+
+# ---------- Добавление своей идеи (только после голосования всех доступных) ----------
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить идею")
+def add_idea(msg):
+    wb = get_book()
+    ws = wb.active
+    total_ideas = [row[0] for row in ws.iter_rows(min_row=2, values_only=True) if row[2] != str(msg.from_user.id)]
+    seen_count = len(user_seen.get(msg.from_user.id, []))
+    if seen_count < len(total_ideas):
+        bot.send_message(msg.chat.id, f"⚠️ Сначала оцени все новые идеи! Осталось {len(total_ideas) - seen_count}")
+        return
+    bot.send_message(msg.chat.id, "✍️ Напиши свою идею одним сообщением:")
+
+# ---------- Идеи по рейтингу ----------
+@bot.message_handler(func=lambda m: m.text == "🏆 Идеи по рейтингу")
+def ideas_by_rating(msg):
+    wb = get_book()
+    ws = wb.active
+    if ws.max_row == 1:
+        bot.send_message(msg.chat.id, "📭 Идей пока нет.")
+        return
+
+    # Используем голоса для сортировки
+    ideas = list(ws.iter_rows(min_row=2, values_only=True))
+    ideas.sort(key=lambda x: idea_votes.get(x[0], 0), reverse=True)
+    text = "🏆 Идеи по рейтингу (от лучшей к худшей):\n\n"
+    for i in ideas:
+        votes = idea_votes.get(i[0], 0)
+        text += f"{i[0]}. {i[3]} — {votes} голосов\n"
+    bot.send_message(msg.chat.id, text)

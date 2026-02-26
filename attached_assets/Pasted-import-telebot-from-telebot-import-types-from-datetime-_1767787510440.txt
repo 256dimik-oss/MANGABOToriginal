@@ -1,0 +1,156 @@
+import telebot
+from telebot import types
+from datetime import datetime
+
+TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ"
+ADMIN_ID = 6513687884
+
+bot = telebot.TeleBot(TOKEN)
+
+# ----------------- Хранилище -----------------
+IDEAS = []  # {id, content, votes, users_voted: set}
+HINT = "Придумай часть истории, которая сейчас отсутствует"
+BOT_ACTIVE = True
+USER_STATE = {}  # user_id -> {'step': 'add'/'vote', 'pending_ideas':[ids]}
+
+# ----------------- Функции -----------------
+def get_leaderboard():
+    return sorted(IDEAS, key=lambda x: x['votes'], reverse=True)
+
+def get_pending_for_user(user_id):
+    seen_ids = set()
+    for idea in IDEAS:
+        if user_id in idea['users_voted']:
+            seen_ids.add(idea['id'])
+    pending = [i for i in IDEAS if i['id'] not in seen_ids]
+    return pending[:10]
+
+def add_idea(user_id, content):
+    if not BOT_ACTIVE:
+        return False
+    new_id = len(IDEAS) + 1
+    IDEAS.append({'id': new_id, 'content': content, 'votes': 0, 'users_voted': set()})
+    return True
+
+def vote_idea(user_id, idea_id):
+    for idea in IDEAS:
+        if idea['id'] == idea_id and user_id not in idea['users_voted']:
+            idea['votes'] += 1
+            idea['users_voted'].add(user_id)
+            return True
+    return False
+
+# ----------------- Кнопки -----------------
+def main_kb():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("➕ Добавить идею")
+    kb.add("📋 Лидерборд")
+    if ADMIN_ID:
+        kb.add("⚙️ Админка")
+    return kb
+
+def vote_kb(ideas):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for idea in ideas:
+        kb.add(f"{idea['id']}. {idea['content'][:30]}...")
+    return kb
+
+# ----------------- Хендлеры -----------------
+@bot.message_handler(commands=["start"])
+def start(msg):
+    bot.send_message(
+        msg.chat.id,
+        f"💜 Бот для сбора идей\nПодсказка: {HINT}\n\nИспользуй кнопки ниже 👇",
+        reply_markup=main_kb()
+    )
+
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить идею")
+def add_idea_step(msg):
+    user_id = msg.from_user.id
+    pending = get_pending_for_user(user_id)
+    if pending:
+        USER_STATE[user_id] = {'step': 'vote', 'pending_ideas': [i['id'] for i in pending]}
+        bot.send_message(msg.chat.id, "⚠️ Перед тем как добавить свою идею, выбери лучшую из предложенных идей:")
+        bot.send_message(msg.chat.id, "Выбери одну:", reply_markup=vote_kb(pending))
+    else:
+        USER_STATE[user_id] = {'step': 'add'}
+        bot.send_message(msg.chat.id, f"💡 Подсказка: {HINT}\n\n✍️ Напиши свою идею:")
+
+@bot.message_handler(func=lambda m: True)
+def handle_all(msg):
+    user_id = msg.from_user.id
+    text = msg.text
+
+    # ----------------- Админка -----------------
+    if user_id == ADMIN_ID and text == "⚙️ Админка":
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        kb.add("Изменить подсказку")
+        kb.add("Включить/Выключить прием идей")
+        kb.add("Назад")
+        bot.send_message(msg.chat.id, "⚙️ Панель администратора", reply_markup=kb)
+        return
+
+    if user_id == ADMIN_ID:
+        if text == "Изменить подсказку":
+            USER_STATE[user_id] = {'step': 'set_hint'}
+            bot.send_message(msg.chat.id, "Напиши новый текст подсказки:")
+            return
+        elif text == "Включить/Выключить прием идей":
+            global BOT_ACTIVE
+            BOT_ACTIVE = not BOT_ACTIVE
+            bot.send_message(msg.chat.id, f"Прием идей {'включен' if BOT_ACTIVE else 'выключен'}")
+            return
+        elif text == "Назад":
+            bot.send_message(msg.chat.id, "Возврат в главное меню", reply_markup=main_kb())
+            return
+        elif USER_STATE.get(user_id, {}).get('step') == 'set_hint':
+            global HINT
+            HINT = text
+            USER_STATE.pop(user_id)
+            bot.send_message(msg.chat.id, f"✅ Подсказка обновлена: {HINT}", reply_markup=main_kb())
+            return
+
+    # ----------------- Лидерборд -----------------
+    if text == "📋 Лидерборд":
+        lb = get_leaderboard()
+        if not lb:
+            bot.send_message(msg.chat.id, "📭 Идей пока нет.")
+            return
+        msg_text = "🏆 Лидеры:\n"
+        for i, idea in enumerate(lb):
+            msg_text += f"{i+1}. {idea['content']} — {idea['votes']} голосов\n"
+        bot.send_message(msg.chat.id, msg_text)
+        return
+
+    # ----------------- Голосование -----------------
+    state = USER_STATE.get(user_id)
+    if state:
+        if state['step'] == 'vote':
+            try:
+                idea_id = int(text.split(".")[0])
+            except:
+                bot.send_message(msg.chat.id, "❌ Выбери идею по кнопке")
+                return
+            if idea_id not in state['pending_ideas']:
+                bot.send_message(msg.chat.id, "❌ Эта идея не доступна для выбора")
+                return
+            vote_idea(user_id, idea_id)
+            bot.send_message(msg.chat.id, "✅ Ты выбрал лучшую идею!")
+            # После голосования даем возможность добавить свою
+            USER_STATE[user_id] = {'step': 'add'}
+            bot.send_message(msg.chat.id, f"💡 Теперь можешь добавить свою идею:\n{HINT}")
+            return
+        elif state['step'] == 'add':
+            if not BOT_ACTIVE:
+                bot.send_message(msg.chat.id, "❌ Прием идей временно остановлен")
+                return
+            add_idea(user_id, text)
+            bot.send_message(msg.chat.id, "✅ Идея сохранена!")
+            USER_STATE.pop(user_id)
+            return
+
+    # ----------------- Все остальные сообщения -----------------
+    bot.send_message(msg.chat.id, "Используй кнопки меню 👆")
+
+# ----------------- Запуск -----------------
+bot.polling()

@@ -1,0 +1,189 @@
+// --- App.tsx (React + простое API на одном файле для демонстрации) ---
+import React, { useState, useEffect } from "react";
+
+// ------------------- Мок Бэкенд -------------------
+let IDEAS: { id: number; content: string; votes: number; usersVoted: Set<number> }[] = [];
+let HINT = "Придумай часть истории, которая сейчас отсутствует";
+let BOT_ACTIVE = true;
+
+function apiGetHint() {
+  return HINT;
+}
+
+function apiSetHint(newHint: string) {
+  HINT = newHint;
+}
+
+function apiToggleBot(active: boolean) {
+  BOT_ACTIVE = active;
+  return BOT_ACTIVE;
+}
+
+function apiGetIdeasForUser(userId: number) {
+  // Возвращает до 10 идей, которые пользователь ещё не оценивал
+  const ideas = IDEAS.filter((i) => !i.usersVoted.has(userId));
+  return ideas.slice(0, 10);
+}
+
+function apiSubmitIdea(userId: number, content: string) {
+  if (!BOT_ACTIVE) return false;
+  const id = IDEAS.length + 1;
+  IDEAS.push({ id, content, votes: 0, usersVoted: new Set() });
+  return true;
+}
+
+function apiVoteIdea(userId: number, id: number) {
+  const idea = IDEAS.find((i) => i.id === id);
+  if (idea && !idea.usersVoted.has(userId)) {
+    idea.votes += 1;
+    idea.usersVoted.add(userId);
+  }
+}
+
+function apiGetLeaderboard() {
+  return [...IDEAS].sort((a, b) => b.votes - a.votes);
+}
+
+// ------------------- Components -------------------
+
+function AddIdeaTab({ userId }: { userId: number }) {
+  const [hint, setHint] = useState("");
+  const [content, setContent] = useState("");
+  const [pendingIdeas, setPendingIdeas] = useState<any[]>([]);
+
+  useEffect(() => {
+    setHint(apiGetHint());
+    const ideas = apiGetIdeasForUser(userId);
+    setPendingIdeas(ideas);
+  }, [userId]);
+
+  const handleSubmit = () => {
+    if (!content.trim()) return;
+    apiSubmitIdea(userId, content);
+    setContent("");
+    alert("✅ Идея сохранена!");
+    setPendingIdeas(apiGetIdeasForUser(userId));
+  };
+
+  const canSubmit = pendingIdeas.length === 0 && BOT_ACTIVE;
+
+  return (
+    <div>
+      <div className="hint">💡 {hint}</div>
+
+      {pendingIdeas.length > 0 && (
+        <div className="notification">
+          ⚠️ Прежде чем добавить свою идею, выбери лучшую из предложенных.
+        </div>
+      )}
+
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder="Напиши свою идею..."
+        disabled={!canSubmit}
+      />
+
+      <button onClick={handleSubmit} disabled={!canSubmit || !content.trim()}>
+        Submit Idea
+      </button>
+    </div>
+  );
+}
+
+function EvaluateTab({ userId }: { userId: number }) {
+  const [ideas, setIdeas] = useState<any[]>([]);
+
+  useEffect(() => {
+    setIdeas(apiGetIdeasForUser(userId));
+  }, [userId]);
+
+  const handleVote = (id: number) => {
+    apiVoteIdea(userId, id);
+    setIdeas(apiGetIdeasForUser(userId));
+    alert("✅ Ты выбрал лучшую идею!");
+  };
+
+  return (
+    <div>
+      {ideas.length === 0 && <p>Ты оценил все доступные идеи!</p>}
+      {ideas.map((idea) => (
+        <div key={idea.id} className="idea-card">
+          <p>{idea.content}</p>
+          <button onClick={() => handleVote(idea.id)}>Выбрать лучшую</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LeaderboardTab() {
+  const [leaders, setLeaders] = useState<any[]>([]);
+
+  useEffect(() => {
+    setLeaders(apiGetLeaderboard());
+  }, []);
+
+  return (
+    <div>
+      <h3>🏆 Лидеры</h3>
+      {leaders.map((idea, i) => (
+        <p key={idea.id}>
+          {i + 1}. {idea.content} — {idea.votes} голосов
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function AdminTab() {
+  const [hint, setHintState] = useState("");
+  const [botActive, setBotActive] = useState(BOT_ACTIVE);
+
+  useEffect(() => {
+    setHintState(apiGetHint());
+  }, []);
+
+  const saveNewHint = () => {
+    apiSetHint(hint);
+    alert("✅ Подсказка обновлена");
+  };
+
+  const toggle = () => {
+    const newState = apiToggleBot(!botActive);
+    setBotActive(newState);
+  };
+
+  return (
+    <div>
+      <h3>Админ-панель</h3>
+      <textarea value={hint} onChange={(e) => setHintState(e.target.value)} />
+      <button onClick={saveNewHint}>Сохранить подсказку</button>
+      <button onClick={toggle}>{botActive ? "Остановить прием идей" : "Запустить прием идей"}</button>
+    </div>
+  );
+}
+
+// ------------------- Main App -------------------
+
+export default function App({ userId, isAdmin }: { userId: number; isAdmin: boolean }) {
+  const [activeTab, setActiveTab] = useState("add");
+
+  return (
+    <div className="app">
+      <nav className="tabs">
+        <button onClick={() => setActiveTab("add")}>Add Idea</button>
+        <button onClick={() => setActiveTab("evaluate")}>Evaluate Ideas</button>
+        <button onClick={() => setActiveTab("leaderboard")}>Leaderboard</button>
+        {isAdmin && <button onClick={() => setActiveTab("admin")}>Admin Panel</button>}
+      </nav>
+
+      <div className="tab-content">
+        {activeTab === "add" && <AddIdeaTab userId={userId} />}
+        {activeTab === "evaluate" && <EvaluateTab userId={userId} />}
+        {activeTab === "leaderboard" && <LeaderboardTab />}
+        {activeTab === "admin" && isAdmin && <AdminTab />}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,209 @@
+import telebot
+from telebot import types
+from openpyxl import Workbook, load_workbook
+import os
+from datetime import datetime
+import random
+
+TOKEN = "ТВОЙ_ТОКЕН_ЗДЕСЬ"
+ADMIN_ID = 6513687884
+FILE = "ideas.xlsx"
+
+bot = telebot.TeleBot(TOKEN)
+
+CATEGORIES = ["Без категории", "Отличная", "Хорошая", "Нормальная", "Плохая", "Ужасная"]
+
+# ---------- Excel (БЕЗ пересоздания) ----------
+def get_book():
+    if os.path.exists(FILE):
+        return load_workbook(FILE)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Идеи"
+    ws.append(["№", "Дата", "Пользователь", "Идея", "Категория"])
+    wb.save(FILE)
+    return wb
+
+# ---------- Пользовательские данные ----------
+user_seen = {}  # {user_id: [ид_идей]}
+user_voted = {} # {user_id: True/False}
+
+# ---------- Кнопки ----------
+def main_kb():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("➕ Добавить идею")
+    kb.add("📋 Все идеи")
+    kb.add("📥 Скачать Excel")
+    kb.add("📝 Оценить идеи")
+    kb.add("🏆 Идеи по рейтингу")
+    return kb
+
+# ---------- Старт ----------
+@bot.message_handler(commands=["start"])
+def start(msg):
+    get_book()  # гарантируем наличие файла
+    bot.send_message(
+        msg.chat.id,
+        "💜 Бот для сбора идей\n\n"
+        "Используй кнопки ниже 👇",
+        reply_markup=main_kb()
+    )
+
+# ---------- Получить новые идеи для оценки ----------
+def get_new_ideas(user_id):
+    wb = get_book()
+    ws = wb.active
+    seen = user_seen.get(user_id, [])
+    ideas = [row for row in ws.iter_rows(min_row=2, values_only=True) if row[0] not in seen]
+    return random.sample(ideas, min(len(ideas), 10))
+
+# ---------- Оценка идей ----------
+@bot.message_handler(func=lambda m: m.text == "📝 Оценить идеи")
+def evaluate_ideas(msg):
+    new_ideas = get_new_ideas(msg.from_user.id)
+    if not new_ideas:
+        bot.send_message(msg.chat.id, "✅ Ты уже оценил все идеи, можешь создавать свою.")
+        return
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for idea in new_ideas:
+        markup.add(f"{idea[0]}. {idea[3]}")
+
+    user_voted[msg.from_user.id] = False
+    bot.send_message(msg.chat.id, "Выбери лучшую идею из списка:", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text.split(".")[0].isdigit() and m.from_user.id in user_voted and not user_voted[m.from_user.id])
+def save_vote(msg):
+    num = int(msg.text.split(".")[0])
+    user_seen.setdefault(msg.from_user.id, []).append(num)
+    user_voted[msg.from_user.id] = True
+    bot.send_message(msg.chat.id, f"Ты оценил идею №{num}. Теперь можешь добавить свою!", reply_markup=main_kb())
+
+# ---------- Добавить идею ----------
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить идею")
+def add_idea(msg):
+    # Проверка, оценил ли пользователь хотя бы раз
+    all_ideas = get_book().active.max_row - 1
+    seen_count = len(user_seen.get(msg.from_user.id, []))
+    if seen_count < all_ideas:
+        bot.send_message(msg.chat.id, f"⚠️ Сначала посмотри новые идеи! Ты еще не видел {all_ideas - seen_count} идей.")
+        return
+    bot.send_message(msg.chat.id, "✍️ Напиши свою идею одним сообщением:")
+
+# ---------- Сохранение идеи ----------
+@bot.message_handler(func=lambda m: m.text not in ["➕ Добавить идею", "📋 Все идеи", "📥 Скачать Excel", "📝 Оценить идеи", "🏆 Идеи по рейтингу"] and not m.text.startswith("/"))
+def save_idea(msg):
+    wb = get_book()
+    ws = wb.active
+
+    num = ws.max_row
+    ws.append([
+        num,
+        datetime.now().strftime("%d.%m.%Y %H:%M"),
+        msg.from_user.username,
+        msg.text,
+        "Без категории"
+    ])
+
+    wb.save(FILE)
+    bot.reply_to(msg, "✅ Идея сохранена 💜")
+
+# ---------- Все идеи (только админ) ----------
+@bot.message_handler(func=lambda m: m.text == "📋 Все идеи")
+def show_ideas(msg):
+    if msg.from_user.id != ADMIN_ID:
+        bot.reply_to(msg, "⛔ Только администратор может смотреть список.")
+        return
+
+    wb = get_book()
+    ws = wb.active
+
+    if ws.max_row == 1:
+        bot.send_message(msg.chat.id, "📭 Идей пока нет.")
+        return
+
+    text = "📋 Все идеи:\n\n"
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        text += f"{row[0]}. {row[3]} — {row[4]}\n"
+
+    bot.send_message(msg.chat.id, text)
+
+# ---------- Идеи по рейтингу ----------
+@bot.message_handler(func=lambda m: m.text == "🏆 Идеи по рейтингу")
+def ideas_by_rating(msg):
+    wb = get_book()
+    ws = wb.active
+    if ws.max_row == 1:
+        bot.send_message(msg.chat.id, "📭 Идей пока нет.")
+        return
+
+    CATEGORY_ORDER = ["Отличная", "Хорошая", "Нормальная", "Плохая", "Ужасная", "Без категории"]
+    ideas = sorted(ws.iter_rows(min_row=2, values_only=True), key=lambda x: CATEGORY_ORDER.index(x[4]))
+    text = "🏆 Идеи по рейтингу:\n\n"
+    for i in ideas:
+        text += f"{i[0]}. {i[3]} — {i[4]}\n"
+    bot.send_message(msg.chat.id, text)
+
+# ---------- Категории (только админ) ----------
+@bot.message_handler(commands=["cat"])
+def set_category(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        _, num, cat = msg.text.split(maxsplit=2)
+        num = int(num)
+    except:
+        bot.reply_to(msg, "❌ Пример:\n/cat 3 Интересно")
+        return
+
+    wb = get_book()
+    ws = wb.active
+
+    for row in ws.iter_rows(min_row=2):
+        if row[0].value == num:
+            row[4].value = cat
+            wb.save(FILE)
+            bot.reply_to(msg, f"✅ Идея №{num} → {cat}")
+            return
+
+    bot.reply_to(msg, "❌ Идея не найдена")
+
+# ---------- Удаление (только админ) ----------
+@bot.message_handler(commands=["del"])
+def delete_idea(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        num = int(msg.text.split()[1])
+    except:
+        bot.reply_to(msg, "❌ Используй: /del номер")
+        return
+
+    wb = get_book()
+    ws = wb.active
+
+    if num + 1 > ws.max_row:
+        bot.reply_to(msg, "❌ Такой идеи нет")
+        return
+
+    ws.delete_rows(num + 1)
+
+    # перенумерация
+    for i, row in enumerate(ws.iter_rows(min_row=2), start=1):
+        row[0].value = i
+
+    wb.save(FILE)
+    bot.reply_to(msg, f"🗑 Идея №{num} удалена")
+
+# ---------- Скачать Excel (только админ) ----------
+@bot.message_handler(func=lambda m: m.text == "📥 Скачать Excel")
+def download_excel(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    bot.send_document(msg.chat.id, open(FILE, "rb"))
+
+# ---------- Запуск ----------
+bot.polling()
